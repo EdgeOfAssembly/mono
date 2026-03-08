@@ -187,9 +187,15 @@ make -j"$(nproc)"
 
 # 3b. Guaranteed (monolite fallback — same as CI)
 ./autogen.sh CFLAGS="-ggdb3 -O2" CXXFLAGS="-ggdb3 -O2"
-make get-monolite-latest   # fetch pre-built mcs; no-op if system Mono works
+make get-monolite-latest   # always downloads pre-built mcs ("monolite") so the build can fall back if system Mono fails
 make -j"$(nproc)"
 ```
+
+> **Security note (monolite):** `make get-monolite-latest` downloads a
+> pre-built `mcs.exe` from `download.mono-project.com` over TLS without
+> checksum verification. A compromised distribution point could inject code
+> into build outputs. If supply-chain integrity is a concern, vendor the
+> tarball or skip this step and rely on the container Mono alone.
 
 **4. Smoke-test**
 

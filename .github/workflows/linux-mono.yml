@@ -12,9 +12,13 @@ name: Linux + Mono
 #   • Mono 6.x bootstrap compiler pre-installed
 #   • All required native libraries present
 #
-# A "monolite" fallback bootstrap step is also included: if the container's
-# Mono ever fails to compile the C# sources, monolite (a minimal pre-built
-# mcs binary) is fetched automatically and the build continues.
+# A "monolite" fallback bootstrap is also included: the monolite tarball
+# (a minimal pre-built mcs binary from download.mono-project.com) is
+# downloaded once and cached via actions/cache.  It is only fetched from
+# the network when the cache is cold or the mcs/class/Makefile changes
+# (which encodes the corlib version and therefore the monolite URL).
+# The downloaded mcs.exe is used as the C# bootstrap compiler only if
+# the container's Mono fails to compile the C# sources.
 
 on:
   push:
@@ -101,12 +105,7 @@ jobs:
           echo "CC=ccache gcc"   >> "$GITHUB_ENV"
           echo "CXX=ccache g++" >> "$GITHUB_ENV"
 
-      # ── Monolite fallback bootstrap ───────────────────────────────────────
-      # Monolite is a pre-built minimal mcs binary maintained by the Mono
-      # project.  We fetch it unconditionally so that the C# bootstrap step
-      # NEVER depends on the container's Mono being perfectly compatible with
-      # HEAD.  If the container's Mono works, this is a no-op at compile time;
-      # if it doesn't, monolite takes over automatically.
+      # ── Configure ─────────────────────────────────────────────────────────
       - name: Configure (autogen.sh)
         run: |
           ./autogen.sh \
@@ -114,7 +113,27 @@ jobs:
             CXXFLAGS="-ggdb3 -O2" \
             --with-crash-privacy=no
 
+      # ── Monolite fallback bootstrap ───────────────────────────────────────
+      # Monolite is a pre-built minimal mcs binary maintained by the Mono
+      # project.  We cache it (keyed on mcs/class/Makefile, which encodes the
+      # corlib version and the download URL) so the tarball is only fetched
+      # from the network when the key changes — not on every run.
+      # The downloaded mcs.exe is used as the C# bootstrap compiler only if
+      # the container's Mono is unable to compile the C# sources itself.
+      - name: Restore monolite bootstrap cache
+        id: monolite-cache
+        uses: actions/cache@v4
+        with:
+          path: mcs/class/lib/monolite-*
+          # mcs/class/Makefile encodes both MONO_CORLIB_VERSION and the
+          # download URL; the hash changes whenever monolite needs updating.
+          # The github.sha fallback ensures the key is never an empty string.
+          key: monolite-${{ runner.os }}-${{ hashFiles('mcs/class/Makefile') || github.sha }}
+          restore-keys: |
+            monolite-${{ runner.os }}-
+
       - name: Fetch monolite bootstrap (guaranteed C# compiler)
+        if: steps.monolite-cache.outputs.cache-hit != 'true'
         run: make get-monolite-latest
 
       # ── Build ─────────────────────────────────────────────────────────────

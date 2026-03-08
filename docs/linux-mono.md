@@ -61,7 +61,15 @@ build still succeeds.
 | Role | Version | Notes |
 |------|---------|-------|
 | **Bootstrap compiler** (build-time only) | Mono 6.x | Provided by the Docker container; used only during `autogen.sh`/`make` to compile C# sources. The resulting binary is independent of this version. |
-| **Monolite fallback** | Latest published | Auto-downloaded via `make get-monolite-latest`; used if the container Mono cannot bootstrap HEAD. |
+| **Monolite fallback** | Latest published | Downloaded via `make get-monolite-latest` from `download.mono-project.com` (mutable `-latest` tarball, no checksum verification). Used only if the container/system Mono cannot bootstrap HEAD. See the security note below. |
+
+> **Security note — monolite:** `make get-monolite-latest` fetches a
+> pre-built `mcs.exe` over TLS from `download.mono-project.com` without
+> an integrity check (no hash or signature verification).  A compromised
+> distribution point could inject code into build outputs.  If
+> supply-chain integrity is critical, vendor the tarball at a specific
+> version, verify its hash offline, and point the `monolite_url` variable
+> to your internal mirror instead.
 | **Built runtime** | HEAD | This is what the repository produces. |
 
 CI validated on: Ubuntu 18.04 LTS (inside container), runner host Ubuntu 22.04, amd64.
@@ -157,12 +165,13 @@ make -j"$(nproc)"
 
 ```bash
 ./autogen.sh CFLAGS="-ggdb3 -O2" CXXFLAGS="-ggdb3 -O2"
-make get-monolite-latest   # fetch pre-built mcs as fallback
+make get-monolite-latest   # always downloads the monolite tarball; the pre-built mcs it provides is used as fallback if system Mono cannot bootstrap HEAD
 make -j"$(nproc)"
 ```
 
-If `make get-monolite-latest` finds that the container/system Mono is
-already sufficient, it is a no-op during the subsequent `make`.
+`make get-monolite-latest` always downloads the monolite tarball, but the
+pre-built fallback compiler it provides is only used if the normal bootstrap
+with the container/system Mono fails during the subsequent `make`.
 
 ### Build only the native runtime (skip class libraries)
 
@@ -275,9 +284,15 @@ mono myapp.exe
 
 ### Using NuGet packages
 
-Mono ships with `nuget` (after `make install`):
+`nuget` is not installed by this repository's `make install`.
+Install it separately via your distro's package manager (it is included
+in `mono-complete` on Ubuntu/Debian), and then use it to restore packages:
 
 ```bash
+# Ubuntu / Debian — nuget ships as part of mono-complete
+sudo apt-get install -y nuget
+
+# Restore packages for your project
 nuget install Newtonsoft.Json
 
 # nuget creates a packages/ subdirectory; replace X.Y.Z with the actual version

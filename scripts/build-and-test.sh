@@ -20,9 +20,7 @@ CFLAGS="${CFLAGS:--ggdb3 -O2}"
 CXXFLAGS="${CXXFLAGS:--ggdb3 -O2}"
 
 echo "=== Step 1: autogen.sh ==="
-./autogen.sh \
-    CFLAGS="${CFLAGS}" \
-    CXXFLAGS="${CXXFLAGS}" \
+CFLAGS="${CFLAGS}" CXXFLAGS="${CXXFLAGS}" ./autogen.sh \
     --with-crash-privacy=no
 
 echo ""
@@ -35,17 +33,21 @@ make -j"${JOBS}" -w V=1
 
 echo ""
 echo "=== Step 4: Verify built runtime ==="
-mono/mini/mono-sgen --version
+# Use the in-tree mono wrapper and freshly built class libraries for all runtime invocations.
+MONO_WRAPPER="${REPO_ROOT}/runtime/mono-wrapper"
+export MONO_PATH="${REPO_ROOT}/mcs/class/lib/build"
+
+"${MONO_WRAPPER}" --version
 
 echo ""
 echo "=== Step 5: Compile test-program.cs ==="
-# Use the freshly built mono-sgen to drive mcs.
+# Use the freshly built runtime (via mono-wrapper) to drive mcs.
 # mcs/class/lib/build/mcs.exe is the bootstrap compiler produced by the build.
-mono/mini/mono-sgen mcs/class/lib/build/mcs.exe test-program.cs
+"${MONO_WRAPPER}" mcs/class/lib/build/mcs.exe test-program.cs
 
 echo ""
 echo "=== Step 6: Run test-program.exe ==="
-mono/mini/mono-sgen test-program.exe
+"${MONO_WRAPPER}" test-program.exe
 
 echo ""
 echo "=== Build-and-test completed successfully ==="

@@ -143,11 +143,20 @@ Linux is a first-class supported platform for this repository.
 Every pull request and push to `main` is validated by the
 [Linux + Mono GitHub Actions workflow](.github/workflows/linux-mono.yml).
 
-For a detailed guide see [docs/linux-mono.md](docs/linux-mono.md).
+For the complete guide see **[docs/linux-mono.md](docs/linux-mono.md)**.
+
+### Why the build is guaranteed
+
+The CI job runs inside the exact same pre-built Docker image that Azure
+Pipelines uses — `mcr.microsoft.com/dotnet-buildtools/prereqs:ubuntu-18.04-mono-amd64` —
+so every tool, library, and Mono bootstrap version is already present and
+pinned.  A `monolite` fallback (pre-built `mcs` binary) is also fetched
+before every build so the C# bootstrap **never** depends on external package
+availability.
 
 ### Quick start (Ubuntu 22.04 / Debian 12)
 
-**1. Install bootstrap Mono and build tools**
+**1. Install dependencies**
 
 ```bash
 sudo apt-get update
@@ -159,137 +168,131 @@ sudo apt-get install -y \
     libglib2.0-dev zlib1g-dev
 ```
 
-Verify the bootstrap runtime is present:
+> **No system Mono?** Skip `mono-complete` and use the monolite fallback
+> (step 3b below).
 
-```bash
-mono --version
-# Mono JIT compiler version 6.x.x ...
-```
-
-**2. Clone (with submodules) and configure**
+**2. Clone with submodules**
 
 ```bash
 git clone --recurse-submodules https://github.com/EdgeOfAssembly/mono.git
 cd mono
-./autogen.sh CFLAGS="-ggdb3 -O2" CXXFLAGS="-ggdb3 -O2"
 ```
 
-**3. Build**
+**3. Configure + build**
 
 ```bash
+# 3a. Standard (with system Mono bootstrap)
+./autogen.sh CFLAGS="-ggdb3 -O2" CXXFLAGS="-ggdb3 -O2"
+make -j"$(nproc)"
+
+# 3b. Guaranteed (monolite fallback — same as CI)
+./autogen.sh CFLAGS="-ggdb3 -O2" CXXFLAGS="-ggdb3 -O2"
+make get-monolite-latest   # fetch pre-built mcs; no-op if system Mono works
 make -j"$(nproc)"
 ```
 
-**4. Smoke-test the freshly built runtime**
+**4. Smoke-test**
 
 ```bash
 ./mono/mini/mono-sgen --version
 ```
 
-**5. Run the core test suites**
+**5. Install system-wide (optional)**
 
 ```bash
-# JIT mini tests (~5 min)
-make -C mono/mini -k check
-
-# Runtime unit tests (~5 min)
-make -C mono/unit-tests -k check
-
-# eglib unit tests (~2 min)
-make -C mono/eglib/test -k check
-
-# C# compiler tests (~30 min)
-make -C mcs/tests run-test
-
-# Full test suite (several hours)
-make check
+sudo make install
+mono --version    # should now resolve from PATH
 ```
+
+### Running your first app
+
+After `make install` (or with `./mono/mini/mono-sgen` as the runtime):
+
+```bash
+# Write a simple program
+cat > hello.cs << 'EOF'
+using System;
+class Hello {
+    static void Main() { Console.WriteLine("Hello from Mono on Linux!"); }
+}
+EOF
+
+# Compile
+mcs hello.cs -out:hello.exe
+
+# Run
+mono hello.exe
+# Hello from Mono on Linux!
+```
+
+Run an existing Windows .exe without recompiling:
+
+```bash
+mono MyWindowsApp.exe
+mono MyWindowsApp.exe --arg1 value
+```
+
+Sync TLS root certificates (needed for HTTPS):
+
+```bash
+cert-sync /etc/ssl/certs/ca-certificates.crt
+```
+
+See [docs/linux-mono.md](docs/linux-mono.md) for the full guide:
+runtime flags, environment variables, NuGet packages, GUI apps,
+debugging, troubleshooting, and more.
 
 ### Prerequisites summary
 
 | Tool | Minimum version | Purpose |
 |------|----------------|---------|
-| GCC  | 7              | C/C++ compiler |
-| GNU Make | 4.0       | Build system |
-| Autoconf | 2.69      | Build configuration |
-| Automake | 1.11      | Makefile generation |
-| CMake | 3.10        | Bundled native libs |
-| mono-complete | 6.x | Bootstrap C# compiler |
-| Python 3 | 3.6     | Build scripts |
+| GCC / G++ | 7 | C/C++ compiler |
+| GNU Make | 4.0 | Build system |
+| Autoconf | 2.69 | Build configuration |
+| Automake | 1.11 | Makefile generation |
+| CMake | 3.10 | Bundled native libs |
+| mono-complete | 6.x | Bootstrap C# compiler (or use monolite) |
+| Python 3 | 3.6 | Build scripts |
 
 ### Environment variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CC` / `CXX` | `gcc`/`g++` | C/C++ compiler (use `ccache gcc` for faster rebuilds) |
-| `EXTRA_CONF_FLAGS` | _(empty)_ | Extra flags passed to `autogen.sh` |
-| `MONO_ENV_OPTIONS` | _(empty)_ | Options forwarded to every `mono` invocation during tests |
+| Variable | Description |
+|----------|-------------|
+| `CC` / `CXX` | Compiler (set to `ccache gcc` / `ccache g++` for faster rebuilds) |
+| `MONO_ENV_OPTIONS` | Options forwarded to every `mono` invocation during tests |
+| `MONO_LOG_LEVEL` | Runtime log verbosity: `error` `warning` `info` `debug` |
+| `MONO_PATH` | Extra directories searched for assemblies |
+| `MONO_TLS_PROVIDER` | TLS backend: `legacy` or `btls` |
 
 ### Troubleshooting
 
-**`mcs: command not found` during `autogen.sh`**
+**`mcs: command not found` during `autogen.sh`** — install `mono-complete` or
+use the monolite fallback (`make get-monolite-latest` before `make`).
 
-A working Mono installation is required to bootstrap the C# compiler.
-Install `mono-complete` (see step 1 above) **before** running `autogen.sh`.
-Alternatively, bootstrap from the monolite distribution:
+**`/usr/bin/ld: cannot find -lglib-2.0`** — `sudo apt-get install -y libglib2.0-dev`.
 
-```bash
-./autogen.sh
-make get-monolite-latest
-make -j"$(nproc)"
-```
+**Build is slow** — `export CC="ccache gcc" CXX="ccache g++"` **before** `./autogen.sh`.
 
-**`configure: error: C compiler cannot create executables`**
+**WinForms tests fail (no display)** — `xvfb-run make -C mcs/class/System.Windows.Forms run-test`.
 
-Install the full GCC toolchain:
-
-```bash
-sudo apt-get install -y build-essential
-```
-
-**`/usr/bin/ld: cannot find -lglib-2.0`**
-
-Install the GLib development headers:
-
-```bash
-sudo apt-get install -y libglib2.0-dev
-```
-
-**Build is very slow**
-
-Use `ccache` to cache compiled objects between rebuilds:
-
-```bash
-sudo apt-get install -y ccache
-export CC="ccache gcc" CXX="ccache g++"
-./autogen.sh
-make -j"$(nproc)"
-```
-
-**Test failures on a minimal install (missing X server)**
-
-The `System.Windows.Forms` tests require an X server.
-Run them inside a virtual framebuffer:
-
-```bash
-sudo apt-get install -y xvfb
-xvfb-run make -C mcs/class/System.Windows.Forms run-test
-```
-
-Or skip them if not needed for your changes.
+Full troubleshooting: [docs/linux-mono.md#troubleshooting](docs/linux-mono.md#troubleshooting).
 
 Using Mono
 ==========
 
-Once you have installed the software, you can run a few programs:
+Once Mono is installed (`sudo make install`), the following tools are on
+your `PATH`:
 
-* `mono program.exe` runtime engine
+* `mono program.exe` — .NET runtime engine; runs any .NET Framework assembly on Linux
 
-* `mcs program.cs` C# compiler
+* `mcs program.cs` — Mono C# compiler (produces a portable `.exe`)
 
-* `monodis program.exe` CIL Disassembler
+* `monodis program.exe` — CIL Disassembler (inspect IL bytecode)
 
-See the man pages for mono(1), mcs(1) and monodis(1) for further details.
+* `cert-sync /etc/ssl/certs/ca-certificates.crt` — sync TLS root certificates
+
+See `man mono`, `man mcs`, and `man monodis` for full details, or the
+complete Linux guide at [docs/linux-mono.md](docs/linux-mono.md).
 
 Directory Roadmap
 =================

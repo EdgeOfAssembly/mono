@@ -27,16 +27,19 @@ Join us on [Discord](https://aka.ms/dotnet-discord) in the `#monovm` channel:
 ### Contents
 
 1. [Compilation and Installation](#compilation-and-installation)
-2. [Using Mono](#using-mono)
-3. [Directory Roadmap](#directory-roadmap)
-4. [Contributing to Mono](#contributing-to-mono)
-5. [Reporting bugs](#reporting-bugs)
-6. [Configuration Options](#configuration-options)
-7. [Working with Submodules](#working-with-submodules)
+2. [Linux + Mono Build Guide](#linux--mono-build-guide)
+3. [Using Mono](#using-mono)
+4. [Directory Roadmap](#directory-roadmap)
+5. [Contributing to Mono](#contributing-to-mono)
+6. [Reporting bugs](#reporting-bugs)
+7. [Configuration Options](#configuration-options)
+8. [Working with Submodules](#working-with-submodules)
 
 ### Build Status
 
 Public CI: [![Azure Pipelines](https://dev.azure.com/dnceng/public/_apis/build/status/mono/mono-ci?branchName=main)](https://dev.azure.com/dnceng/public/_build/latest?definitionId=952&branchName=main)
+
+Linux + Mono (GitHub Actions): [![Linux + Mono](https://github.com/EdgeOfAssembly/mono/actions/workflows/linux-mono.yml/badge.svg?branch=main)](https://github.com/EdgeOfAssembly/mono/actions/workflows/linux-mono.yml)
 
 Legacy Jenkins CI (no longer available publicly):
 
@@ -131,20 +134,171 @@ You can now install mono with: `make install`
 
 You can verify your installation by using the mono-test-install
 script, it can diagnose some common problems with Mono's install.
-Failure to follow these steps may result in a broken installation. 
+Failure to follow these steps may result in a broken installation.
+
+Linux + Mono Build Guide
+========================
+
+Linux is a first-class supported platform for this repository.
+Every pull request and push to `main` is validated by the
+[Linux + Mono GitHub Actions workflow](.github/workflows/linux-mono.yml).
+
+For the complete guide see **[docs/linux-mono.md](docs/linux-mono.md)**.
+
+### Why the build is guaranteed
+
+The CI job runs inside the exact same pre-built Docker image that Azure
+Pipelines uses — `mcr.microsoft.com/dotnet-buildtools/prereqs:ubuntu-18.04-mono-amd64` —
+so every tool, library, and Mono bootstrap version is already present and
+pinned.  A `monolite` fallback (pre-built `mcs` binary) is also fetched
+before every build so the C# bootstrap **never** depends on external package
+availability.
+
+### Quick start (Ubuntu 22.04 / Debian 12)
+
+**1. Install dependencies**
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+    mono-complete \
+    autoconf automake libtool \
+    build-essential gettext \
+    cmake python3 curl wget bc \
+    libglib2.0-dev zlib1g-dev
+```
+
+> **No system Mono?** Skip `mono-complete` and use the monolite fallback
+> (step 3b below).
+
+**2. Clone with submodules**
+
+```bash
+git clone --recurse-submodules https://github.com/EdgeOfAssembly/mono.git
+cd mono
+```
+
+**3. Configure + build**
+
+```bash
+# 3a. Standard (with system Mono bootstrap)
+./autogen.sh CFLAGS="-ggdb3 -O2" CXXFLAGS="-ggdb3 -O2"
+make -j"$(nproc)"
+
+# 3b. Guaranteed (monolite fallback — same as CI)
+./autogen.sh CFLAGS="-ggdb3 -O2" CXXFLAGS="-ggdb3 -O2"
+make get-monolite-latest   # always downloads pre-built mcs ("monolite") so the build can fall back if system Mono fails
+make -j"$(nproc)"
+```
+
+> **Security note (monolite):** `make get-monolite-latest` downloads a
+> pre-built `mcs.exe` from `download.mono-project.com` over TLS without
+> checksum verification. A compromised distribution point could inject code
+> into build outputs. If supply-chain integrity is a concern, vendor the
+> tarball or skip this step and rely on the container Mono alone.
+
+**4. Smoke-test**
+
+```bash
+./mono/mini/mono-sgen --version
+```
+
+**5. Install system-wide (optional)**
+
+```bash
+sudo make install
+mono --version    # should now resolve from PATH
+```
+
+### Running your first app
+
+After `make install` (or with `./mono/mini/mono-sgen` as the runtime):
+
+```bash
+# Write a simple program
+cat > hello.cs << 'EOF'
+using System;
+class Hello {
+    static void Main() { Console.WriteLine("Hello from Mono on Linux!"); }
+}
+EOF
+
+# Compile
+mcs hello.cs -out:hello.exe
+
+# Run
+mono hello.exe
+# Hello from Mono on Linux!
+```
+
+Run an existing Windows .exe without recompiling:
+
+```bash
+mono MyWindowsApp.exe
+mono MyWindowsApp.exe --arg1 value
+```
+
+Sync TLS root certificates (needed for HTTPS):
+
+```bash
+cert-sync /etc/ssl/certs/ca-certificates.crt
+```
+
+See [docs/linux-mono.md](docs/linux-mono.md) for the full guide:
+runtime flags, environment variables, NuGet packages, GUI apps,
+debugging, troubleshooting, and more.
+
+### Prerequisites summary
+
+| Tool | Minimum version | Purpose |
+|------|----------------|---------|
+| GCC / G++ | 7 | C/C++ compiler |
+| GNU Make | 4.0 | Build system |
+| Autoconf | 2.69 | Build configuration |
+| Automake | 1.11 | Makefile generation |
+| CMake | 3.10 | Bundled native libs |
+| mono-complete | 6.x | Bootstrap C# compiler (or use monolite) |
+| Python 3 | 3.6 | Build scripts |
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `CC` / `CXX` | Compiler (set to `ccache gcc` / `ccache g++` for faster rebuilds) |
+| `MONO_ENV_OPTIONS` | Options forwarded to every `mono` invocation during tests |
+| `MONO_LOG_LEVEL` | Runtime log verbosity: `error` `warning` `info` `debug` |
+| `MONO_PATH` | Extra directories searched for assemblies |
+| `MONO_TLS_PROVIDER` | TLS backend: `legacy` or `btls` |
+
+### Troubleshooting
+
+**`mcs: command not found` during `autogen.sh`** — install `mono-complete` or
+use the monolite fallback (`make get-monolite-latest` before `make`).
+
+**`/usr/bin/ld: cannot find -lglib-2.0`** — `sudo apt-get install -y libglib2.0-dev`.
+
+**Build is slow** — `export CC="ccache gcc" CXX="ccache g++"` **before** `./autogen.sh`.
+
+**WinForms tests fail (no display)** — `xvfb-run make -C mcs/class/System.Windows.Forms run-test`.
+
+Full troubleshooting: [docs/linux-mono.md#troubleshooting](docs/linux-mono.md#troubleshooting).
 
 Using Mono
 ==========
 
-Once you have installed the software, you can run a few programs:
+Once Mono is installed (`sudo make install`), the following tools are on
+your `PATH`:
 
-* `mono program.exe` runtime engine
+* `mono program.exe` — .NET runtime engine; runs any .NET Framework assembly on Linux
 
-* `mcs program.cs` C# compiler
+* `mcs program.cs` — Mono C# compiler (produces a portable `.exe`)
 
-* `monodis program.exe` CIL Disassembler
+* `monodis program.exe` — CIL Disassembler (inspect IL bytecode)
 
-See the man pages for mono(1), mcs(1) and monodis(1) for further details.
+* `cert-sync /etc/ssl/certs/ca-certificates.crt` — sync TLS root certificates
+
+See `man mono`, `man mcs`, and `man monodis` for full details, or the
+complete Linux guide at [docs/linux-mono.md](docs/linux-mono.md).
 
 Directory Roadmap
 =================

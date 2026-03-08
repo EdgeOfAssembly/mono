@@ -1,0 +1,160 @@
+name: Linux + Mono
+
+on:
+  push:
+    branches:
+      - main
+      - '20*-*'
+    paths-ignore:
+      - '.github/CONTRIBUTING.md'
+      - 'CODE-OF-CONDUCT.md'
+      - 'PATENTS.TXT'
+      - 'THIRD-PARTY-NOTICES.TXT'
+  pull_request:
+    branches:
+      - main
+      - '20*-*'
+    paths-ignore:
+      - '.github/CONTRIBUTING.md'
+      - 'CODE-OF-CONDUCT.md'
+      - 'PATENTS.TXT'
+      - 'THIRD-PARTY-NOTICES.TXT'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Test (Linux x64)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      CPU_COUNT: 4   # overridden at runtime; see "Detect CPU count" step
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 10
+          submodules: recursive
+
+      # ── Detect CPU count ──────────────────────────────────────────────────
+      - name: Detect CPU count
+        run: echo "CPU_COUNT=$(getconf _NPROCESSORS_ONLN || echo 4)" >> "$GITHUB_ENV"
+
+      # ── Tool-version diagnostics ──────────────────────────────────────────
+      - name: Print host environment
+        run: |
+          uname -a
+          lsb_release -a || true
+          gcc --version
+          make --version
+          python3 --version
+
+      # ── Bootstrap Mono (required to compile C# sources) ──────────────────
+      - name: Install bootstrap Mono
+        run: |
+          sudo apt-get update -qq
+          # Install Mono from the Ubuntu archive (sufficient for bootstrap).
+          # The build will then compile a newer Mono on top of this.
+          sudo apt-get install -y --no-install-recommends \
+            mono-complete
+
+      # ── Build dependencies ────────────────────────────────────────────────
+      - name: Install build dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            autoconf \
+            automake \
+            libtool \
+            build-essential \
+            gettext \
+            cmake \
+            python3 \
+            curl \
+            wget \
+            bc \
+            ccache \
+            libglib2.0-dev \
+            zlib1g-dev
+
+      # ── Print bootstrap Mono version ──────────────────────────────────────
+      - name: Print bootstrap Mono version
+        run: mono --version
+
+      # ── ccache ───────────────────────────────────────────────────────────
+      - name: Configure ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-linux-amd64-${{ github.sha }}
+          restore-keys: |
+            ccache-linux-amd64-
+
+      - name: Set up ccache
+        run: |
+          ccache --max-size=2G
+          ccache --zero-stats
+          echo "CC=ccache gcc" >> "$GITHUB_ENV"
+          echo "CXX=ccache g++" >> "$GITHUB_ENV"
+
+      # ── Configure ─────────────────────────────────────────────────────────
+      - name: Configure (autogen.sh)
+        run: |
+          ./autogen.sh \
+            CFLAGS="-ggdb3 -O2" \
+            CXXFLAGS="-ggdb3 -O2" \
+            --with-crash-privacy=no
+
+      # ── Build ─────────────────────────────────────────────────────────────
+      - name: Build
+        run: make -j"${CPU_COUNT}" -w V=1
+
+      # ── ccache stats ──────────────────────────────────────────────────────
+      - name: Print ccache statistics
+        if: always()
+        run: ccache --show-stats
+
+      # ── Print built Mono version ──────────────────────────────────────────
+      - name: Print built Mono version
+        run: mono/mini/mono-sgen --version
+
+      # ── Tests ─────────────────────────────────────────────────────────────
+      - name: Run mini JIT tests
+        run: make -w -C mono/mini -k check EMIT_NUNIT=1
+        continue-on-error: false
+
+      - name: Run mini AOT check
+        run: make -j"${CPU_COUNT}" -w -C mono/mini -k aotcheck
+        continue-on-error: true
+
+      - name: Run runtime unit tests
+        run: make -w -C mono/unit-tests -k check
+
+      - name: Run eglib unit tests
+        run: make -w -C mono/eglib/test -k check
+
+      - name: Run compiler tests
+        run: make -w -C mcs/tests run-test
+        timeout-minutes: 30
+
+      - name: Run compiler error tests
+        run: make -w -C mcs/errors run-test
+        timeout-minutes: 30
+
+      - name: Run corlib tests
+        run: make -w -C mcs/class/corlib run-test
+        timeout-minutes: 30
+
+      # ── Publish test results ──────────────────────────────────────────────
+      - name: Publish NUnit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-linux-amd64
+          path: '**/TestResult*.xml'
+          if-no-files-found: ignore

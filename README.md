@@ -27,16 +27,19 @@ Join us on [Discord](https://aka.ms/dotnet-discord) in the `#monovm` channel:
 ### Contents
 
 1. [Compilation and Installation](#compilation-and-installation)
-2. [Using Mono](#using-mono)
-3. [Directory Roadmap](#directory-roadmap)
-4. [Contributing to Mono](#contributing-to-mono)
-5. [Reporting bugs](#reporting-bugs)
-6. [Configuration Options](#configuration-options)
-7. [Working with Submodules](#working-with-submodules)
+2. [Linux + Mono Build Guide](#linux--mono-build-guide)
+3. [Using Mono](#using-mono)
+4. [Directory Roadmap](#directory-roadmap)
+5. [Contributing to Mono](#contributing-to-mono)
+6. [Reporting bugs](#reporting-bugs)
+7. [Configuration Options](#configuration-options)
+8. [Working with Submodules](#working-with-submodules)
 
 ### Build Status
 
 Public CI: [![Azure Pipelines](https://dev.azure.com/dnceng/public/_apis/build/status/mono/mono-ci?branchName=main)](https://dev.azure.com/dnceng/public/_build/latest?definitionId=952&branchName=main)
+
+Linux + Mono (GitHub Actions): [![Linux + Mono](https://github.com/EdgeOfAssembly/mono/actions/workflows/linux-mono.yml/badge.svg?branch=main)](https://github.com/EdgeOfAssembly/mono/actions/workflows/linux-mono.yml)
 
 Legacy Jenkins CI (no longer available publicly):
 
@@ -131,7 +134,149 @@ You can now install mono with: `make install`
 
 You can verify your installation by using the mono-test-install
 script, it can diagnose some common problems with Mono's install.
-Failure to follow these steps may result in a broken installation. 
+Failure to follow these steps may result in a broken installation.
+
+Linux + Mono Build Guide
+========================
+
+Linux is a first-class supported platform for this repository.
+Every pull request and push to `main` is validated by the
+[Linux + Mono GitHub Actions workflow](.github/workflows/linux-mono.yml).
+
+For a detailed guide see [docs/linux-mono.md](docs/linux-mono.md).
+
+### Quick start (Ubuntu 22.04 / Debian 12)
+
+**1. Install bootstrap Mono and build tools**
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+    mono-complete \
+    autoconf automake libtool \
+    build-essential gettext \
+    cmake python3 curl wget bc \
+    libglib2.0-dev zlib1g-dev
+```
+
+Verify the bootstrap runtime is present:
+
+```bash
+mono --version
+# Mono JIT compiler version 6.x.x ...
+```
+
+**2. Clone (with submodules) and configure**
+
+```bash
+git clone --recurse-submodules https://github.com/EdgeOfAssembly/mono.git
+cd mono
+./autogen.sh CFLAGS="-ggdb3 -O2" CXXFLAGS="-ggdb3 -O2"
+```
+
+**3. Build**
+
+```bash
+make -j"$(nproc)"
+```
+
+**4. Smoke-test the freshly built runtime**
+
+```bash
+./mono/mini/mono-sgen --version
+```
+
+**5. Run the core test suites**
+
+```bash
+# JIT mini tests (~5 min)
+make -C mono/mini -k check
+
+# Runtime unit tests (~5 min)
+make -C mono/unit-tests -k check
+
+# eglib unit tests (~2 min)
+make -C mono/eglib/test -k check
+
+# C# compiler tests (~30 min)
+make -C mcs/tests run-test
+
+# Full test suite (several hours)
+make check
+```
+
+### Prerequisites summary
+
+| Tool | Minimum version | Purpose |
+|------|----------------|---------|
+| GCC  | 7              | C/C++ compiler |
+| GNU Make | 4.0       | Build system |
+| Autoconf | 2.69      | Build configuration |
+| Automake | 1.11      | Makefile generation |
+| CMake | 3.10        | Bundled native libs |
+| mono-complete | 6.x | Bootstrap C# compiler |
+| Python 3 | 3.6     | Build scripts |
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CC` / `CXX` | `gcc`/`g++` | C/C++ compiler (use `ccache gcc` for faster rebuilds) |
+| `EXTRA_CONF_FLAGS` | _(empty)_ | Extra flags passed to `autogen.sh` |
+| `MONO_ENV_OPTIONS` | _(empty)_ | Options forwarded to every `mono` invocation during tests |
+
+### Troubleshooting
+
+**`mcs: command not found` during `autogen.sh`**
+
+A working Mono installation is required to bootstrap the C# compiler.
+Install `mono-complete` (see step 1 above) **before** running `autogen.sh`.
+Alternatively, bootstrap from the monolite distribution:
+
+```bash
+./autogen.sh
+make get-monolite-latest
+make -j"$(nproc)"
+```
+
+**`configure: error: C compiler cannot create executables`**
+
+Install the full GCC toolchain:
+
+```bash
+sudo apt-get install -y build-essential
+```
+
+**`/usr/bin/ld: cannot find -lglib-2.0`**
+
+Install the GLib development headers:
+
+```bash
+sudo apt-get install -y libglib2.0-dev
+```
+
+**Build is very slow**
+
+Use `ccache` to cache compiled objects between rebuilds:
+
+```bash
+sudo apt-get install -y ccache
+export CC="ccache gcc" CXX="ccache g++"
+./autogen.sh
+make -j"$(nproc)"
+```
+
+**Test failures on a minimal install (missing X server)**
+
+The `System.Windows.Forms` tests require an X server.
+Run them inside a virtual framebuffer:
+
+```bash
+sudo apt-get install -y xvfb
+xvfb-run make -C mcs/class/System.Windows.Forms run-test
+```
+
+Or skip them if not needed for your changes.
 
 Using Mono
 ==========
